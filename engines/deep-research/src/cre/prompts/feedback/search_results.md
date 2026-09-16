@@ -1,0 +1,4 @@
+[Strategy checkpoint]
+Before another search, decide what this batch changed. Select the strongest candidate to inspect, pivot one meaningful query dimension, or stop this branch. Do not treat snippets as evidence or repeat a near-duplicate broad query. If a source genuinely supplies a new argument, framing, example, or objection, incorporate the reasoning yourself and attach its id to the revised argument's material_source_ids so the human can trace the inspiration without mistaking it for factual proof.
+
+Use the access/readability labels when candidates are comparably relevant: structured_api/high should normally be inspected before fragile_platform/low. A content_access=lead_only item may inspire a query or be attached as a lead, but requesting a deep read of its landing page is wasteful; seek a transcript or alternate text copy instead.

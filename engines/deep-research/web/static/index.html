@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>论衡 · 双边深度研究工作台</title>
+  <meta name="description" content="Continuous Research Engine 轻量研究工作台">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span></div>
+        <div><strong>论衡</strong><small>RESEARCH ENGINE</small></div>
+      </div>
+
+      <button class="new-topic" id="newTopicButton"><span>＋</span> 新建辩题研究</button>
+
+      <p class="side-label">当前研究</p>
+      <div id="researchList"><div class="research-row active"><div class="research-item"><span class="status-dot"></span><span><strong>尚未开始研究</strong><small>新建辩题后将保存在这里</small></span></div></div></div>
+      <button class="clear-failed hidden" id="clearFailedButton" type="button">清理失败记录 <b id="failedCount">0</b></button>
+
+      <nav class="side-nav" aria-label="页面导航">
+        <p class="side-label">工作区</p>
+        <button data-view="overview" class="active"><span>⌂</span>当前成果</button>
+        <button data-view="research"><span>◫</span>双方立论</button>
+        <button data-view="issues"><span>◇</span>攻防要点 <b id="issueBadge">0</b></button>
+        <button data-view="sources"><span>≡</span>证据与来源</button>
+        <button data-view="report"><span>↗</span>成果报告</button>
+        <button data-view="history"><span>↺</span>推演历史</button>
+        <p class="side-label system-label">系统</p>
+        <button data-view="settings"><span>⚙</span>模型 API <em id="settingsDot"></em></button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="engine-state"><i></i><span><strong>CRE v0.8.2</strong><small>持久化引擎工作台</small></span></div>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div class="breadcrumb"><span>研究空间</span><b>/</b><strong id="crumb">当前成果</strong></div>
+        <div class="top-actions">
+          <button class="ghost-button" id="exportButton" disabled>↓ 下载 PDF</button>
+          <button class="avatar" aria-label="本地用户">研</button>
+        </div>
+      </header>
+
+      <section class="page active" id="view-overview">
+        <div class="hero">
+          <div class="eyebrow"><span></span>POSITION-CONDITIONED DEEP RESEARCH</div>
+          <h1>把立场立住，再把对方驳清。</h1>
+          <p>让两个论证者坚持各自立场，以深度研究补全证明链，再通过基础互驳修正会被轻易击穿的部分。</p>
+        </div>
+
+        <section class="launch-card" id="launchCard">
+          <div class="launch-head">
+            <div><span class="step-number">01</span><h2>定义研究对象</h2></div>
+            <span class="stable-chip">真实研究</span>
+          </div>
+          <label for="questionInput">辩题</label>
+          <div class="question-input"><span>「</span><input id="questionInput" placeholder="输入你要研究的辩题" maxlength="500"><span>」</span></div>
+          <div class="position-grid">
+            <div class="position-input side-a"><span class="side-tag">A</span><div><label>正方固定立场</label><input id="positionAInput" placeholder="留空则自动设为支持命题"></div></div>
+            <div class="position-input side-b"><span class="side-tag">B</span><div><label>反方固定立场</label><input id="positionBInput" placeholder="留空则自动设为反对命题"></div></div>
+          </div>
+          <div class="depth-row"><div><label for="depthInput">研究强度</label><select id="depthInput"><option value="deep" selected>深度研究 · 每方至少 40 个来源、20 项深读证据</option><option value="standard">标准研究 · 每方至少 24 个来源、12 项深读证据</option></select></div><small>研究会消耗模型额度，时间取决于模型速度与资料规模。</small></div>
+          <div class="launch-foot">
+            <p><span>ⓘ</span> 双方使用隔离上下文，联网搜索、深读原文并在基础互驳后修复立论。</p>
+            <button class="primary-button" id="runButton">开始双边研究 <span>→</span></button>
+          </div>
+        </section>
+
+        <section class="run-panel hidden" id="runPanel">
+          <div class="run-title"><div><span class="live-dot"></span><strong id="runTitle">研究正在展开</strong></div><small id="runTime">正在初始化双研究者上下文…</small></div><p class="run-note" id="runNote">可以关闭页面；每方完成一个 Pass 都会保存检查点。</p><div class="run-actions"><label class="resume-depth hidden" id="resumeDepthWrap">继续强度<select id="resumeDepthInput"><option value="deep">深度 · 180 次研究 / 1.5M Token</option><option value="standard">标准 · 90 次研究 / 600k Token</option></select></label><button class="ghost-button hidden" id="retryButton">从检查点继续研究</button></div>
+          <div class="phase-track">
+            <div class="phase active" data-phase="0"><i>1</i><span><strong>独立立论</strong><small>构建证明链</small></span></div>
+            <div class="phase-line"><span></span></div>
+            <div class="phase" data-phase="1"><i>2</i><span><strong>基础互驳</strong><small>定位论证断点</small></span></div>
+            <div class="phase-line"><span></span></div>
+            <div class="phase" data-phase="2"><i>3</i><span><strong>立论修复</strong><small>补证、收窄或替换</small></span></div>
+            <div class="phase-line"><span></span></div>
+            <div class="phase" data-phase="3"><i>4</i><span><strong>稳定审计</strong><small>判断是否值得继续</small></span></div>
+          </div>
+          <section class="process-live" aria-labelledby="processTitle">
+            <header class="process-head">
+              <div><span class="page-kicker">LIVE RESEARCH TRACE</span><h3 id="processTitle">研究现场</h3><p>展示模型采取的可核验行动、工具结果与预算，不展示不可验证的内部思维链。</p></div>
+              <span id="processCount">等待行动</span>
+            </header>
+            <div class="process-budgets" id="processBudgets"></div>
+            <div class="process-events" id="processEvents" aria-live="polite">
+              <div class="process-empty">模型启动后，搜索目的、查询策略、来源深读和论点更新会依次出现在这里。</div>
+            </div>
+          </section>
+        </section>
+
+        <div id="overviewResults" class="hidden"></div>
+      </section>
+
+      <section class="page" id="view-research"><div class="page-content" id="researchContent"></div></section>
+      <section class="page" id="view-issues"><div class="page-content" id="issuesContent"></div></section>
+      <section class="page" id="view-sources"><div class="page-content" id="sourcesContent"></div></section>
+      <section class="page" id="view-report"><div class="page-content" id="reportContent"></div></section>
+      <section class="page" id="view-history"><div class="page-content" id="historyContent"></div></section>
+      <section class="page" id="view-settings">
+        <div class="page-content settings-page">
+          <div class="page-heading">
+            <div><span class="page-kicker">MODEL CONNECTION</span><h1>模型 API 设置</h1><p>选择供应商后自动带入地址、鉴权方式和常用模型；A、B 仍使用彼此隔离的上下文。</p></div>
+            <span class="config-state" id="configState">未配置</span>
+          </div>
+
+          <div class="settings-layout">
+            <form class="settings-card" id="modelSettingsForm" autocomplete="off">
+              <div class="settings-section-head"><span>01</span><div><h2>API 连接</h2><p>优先提供各模型公司的官方 API，也支持订阅网关、云平台、聚合站和自定义接口。</p></div></div>
+              <div class="form-field">
+                <label for="providerInput">供应商或网关</label>
+                <select id="providerInput" required></select>
+                <small id="providerNote">正在读取供应商目录…</small>
+              </div>
+              <div class="form-field">
+                <label for="protocolInput">接口协议</label>
+                <select id="protocolInput">
+                  <option value="auto">自动选择（推荐）</option>
+                  <option value="openai_responses">OpenAI Responses</option>
+                  <option value="openai_chat">OpenAI Chat Completions</option>
+                  <option value="anthropic_messages">Anthropic Messages</option>
+                </select>
+                <small id="protocolHint">普通供应商使用其默认协议；OpenCode Go 会按模型自动选择。</small>
+              </div>
+              <div class="form-field">
+                <label for="baseUrlInput">API 基础地址</label>
+                <input id="baseUrlInput" type="url" value="https://api.openai.com/v1" spellcheck="false" required>
+                <small>例如 https://api.openai.com/v1，请不要在末尾填写 /chat/completions。</small>
+              </div>
+              <div class="form-field">
+                <label for="apiKeyInput">API 密钥 <span id="apiKeyHint"></span></label>
+                <div class="secret-field"><input id="apiKeyInput" type="password" placeholder="粘贴供应商提供的 API key" spellcheck="false"><button type="button" id="toggleSecret" aria-label="显示或隐藏密钥">◉</button></div>
+                <small>密钥只保存在这台电脑的本地服务端；页面不会读回完整密钥。留空表示保留已保存的密钥。</small>
+              </div>
+
+              <div class="settings-divider"></div>
+              <div class="settings-section-head"><span>02</span><div><h2>双方模型</h2><p>两方始终使用隔离的上下文，即使模型 ID 相同。</p></div></div>
+              <div class="form-field model-catalog-field">
+                <label for="modelCatalogInput">可用模型目录 <span id="modelCatalogCount"></span></label>
+                <div class="model-catalog-row"><select id="modelCatalogInput"></select><button class="ghost-button" id="useCatalogModelButton" type="button">设为双方模型</button></div>
+                <small id="modelCostHint">保存供应商设置后会自动读取完整模型目录，也可随时手动刷新。</small>
+              </div>
+              <div class="model-fields">
+                <div class="form-field agent-model a"><label for="modelASelect"><i>A</i> 正方模型</label><select id="modelASelect" required></select><input class="hidden" id="modelAInput" placeholder="直接填写模型或部署 ID" spellcheck="false"></div>
+                <button class="copy-model" id="copyModelButton" type="button" title="将 A 方模型复制给 B 方">向下同步</button>
+                <div class="form-field agent-model b"><label for="modelBSelect"><i>B</i> 反方模型</label><select id="modelBSelect" required></select><input class="hidden" id="modelBInput" placeholder="直接填写模型或部署 ID" spellcheck="false"></div>
+              </div>
+              <div class="form-field timeout-field"><label for="timeoutInput">单次请求超时</label><div><input id="timeoutInput" type="number" min="10" max="600" step="10" value="120"><span>秒</span></div></div>
+
+              <div class="settings-actions">
+                <div class="test-result" id="connectionResult"><i></i><span>保存后会自动连接供应商并读取其完整模型目录。</span></div>
+                <button class="ghost-button" id="testConnectionButton" type="button">刷新模型目录</button>
+                <button class="primary-button" id="saveSettingsButton" type="submit">保存设置</button>
+              </div>
+            </form>
+
+            <aside class="settings-aside">
+              <section><span class="aside-icon">⌭</span><h3>密钥不进入前端状态</h3><p>保存后，浏览器只能知道“已配置”以及密钥末四位，不能通过设置接口获取原文。</p></section>
+              <section><span class="aside-icon">⇄</span><h3>不只是“兼容 OpenAI”</h3><p>引擎会转换 Responses、Chat Completions 与 Anthropic Messages 的消息和工具调用格式。</p></section>
+              <section class="demo-warning"><span class="aside-icon">⌕</span><h3>研究将产生真实调用</h3><p>模型负责规划、检索、深读、立论和互驳；网页搜索默认使用无需额外密钥的公共搜索入口。</p></section>
+            </aside>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="detailDialog">
+    <button class="dialog-close" aria-label="关闭">×</button>
+    <div id="dialogContent"></div>
+  </dialog>
+  <div class="toast" id="toast"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,1 @@
+Conclude this research pass. Run an exit audit first: have you honored Provenance Duty and Adversarial Verification Duty, and is there truly no high-gain next action? Set no_high_value_direction accordingly.

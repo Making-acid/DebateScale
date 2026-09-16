@@ -1,0 +1,1 @@
+Create or revise a human-readable rebuttal to an exact opponent argument revision. Reconstruct the opponent fairly, locate the broken link, explain why it matters, and anticipate repair. Do not write opaque agent-only shorthand.

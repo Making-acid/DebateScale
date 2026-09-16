@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cre"
+version = "0.8.2"
+description = "Continuous Research Engine - dual-agent continuous research over a research object"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+asr = [
+    "faster-whisper>=1.1,<2",
+    "yt-dlp>=2025.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"cre.prompts" = [
+    "*.md",
+    "common/*.md",
+    "phases/*.md",
+    "tools/*.md",
+    "feedback/*.md",
+]
