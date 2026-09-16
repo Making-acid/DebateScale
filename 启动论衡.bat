@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions
 
-set "CRE_PROJECT=%~dp0engines\deep-research"
+set "CRE_PROJECT=%~dp0systems\deep-research"
 set "CRE_STARTER=%CRE_PROJECT%\start_web.ps1"
 set "CRE_URL=http://127.0.0.1:8765/"
 set "CRE_VERSION=0.8.2"
