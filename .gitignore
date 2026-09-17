@@ -20,6 +20,7 @@ venv/
 *.egg-info/
 build/
 dist/
+release/
 
 # Generated research data and media
 **/output/
@@ -33,4 +34,3 @@ dist/
 .DS_Store
 Thumbs.db
 desktop.ini
-

@@ -30,9 +30,18 @@ from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 
-ROOT = Path(__file__).resolve().parents[1]
-STATIC = Path(__file__).resolve().parent / "static"
-LOCAL_STATE = Path(__file__).resolve().parent / ".local"
+if getattr(sys, "frozen", False):
+    # PyInstaller keeps bundled read-only assets under ``_MEIPASS`` while the
+    # executable's directory remains the stable, user-visible writable home.
+    # Keeping those two concerns separate makes the portable build genuinely
+    # movable and prevents credentials from being baked into the executable.
+    ROOT = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    STATIC = ROOT / "web" / "static"
+    LOCAL_STATE = Path(sys.executable).resolve().parent / "data"
+else:
+    ROOT = Path(__file__).resolve().parents[1]
+    STATIC = Path(__file__).resolve().parent / "static"
+    LOCAL_STATE = Path(__file__).resolve().parent / ".local"
 MODEL_CONFIG = LOCAL_STATE / "model_config.json"
 MODEL_CATALOG_CACHE = LOCAL_STATE / "model_catalogs.json"
 RESEARCH_DIR = LOCAL_STATE / "researches"
@@ -1001,10 +1010,23 @@ class ExclusiveWorkbenchServer(ThreadingHTTPServer):
 
 def main() -> None:
     host, port = "127.0.0.1", 8765
-    server = ExclusiveWorkbenchServer((host, port), WorkbenchHandler)
+    url = f"http://{host}:{port}"
+    try:
+        server = ExclusiveWorkbenchServer((host, port), WorkbenchHandler)
+    except OSError:
+        # Reopening the portable app should focus the already-running instance
+        # instead of producing a second hidden process or an alarming traceback.
+        try:
+            with urlopen(f"{url}/api/health", timeout=2) as response:
+                health = json.loads(response.read().decode("utf-8"))
+            if health.get("ok") and health.get("version") == APP_VERSION:
+                webbrowser.open(url)
+                return
+        except Exception:
+            pass
+        raise
     _restore_job_snapshots()
     server.daemon_threads = True
-    url = f"http://{host}:{port}"
     print(f"CRE research workbench: {url}")
     if os.environ.get("CRE_NO_BROWSER") != "1":
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()

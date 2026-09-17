@@ -21,6 +21,12 @@ powershell.exe -ExecutionPolicy Bypass -File .\start_web.ps1
 
 默认地址为 `http://127.0.0.1:8765/`。
 
+## Windows 便携版
+
+`packaging/windows/build_portable.ps1` 可以生成无需另装 Python 的 Windows
+便携目录和 ZIP。成品继续使用浏览器作为界面，不额外引入 WebView 壳；模型
+配置和研究记录只写入成品目录中的 `data`，不会被编译进程序。
+
 ## 测试
 
 ```powershell
