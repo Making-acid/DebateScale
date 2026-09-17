@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cre.adapters import JsonFileStore
-from cre.engine import ResearchEngine, ResearchRequest, project_research
+from cre.engine import ResearchEngine, ResearchRequest, project_research, research_policy
 from cre.models import Party, ResearchPlan, ResearchUnit
 from cre.ports.llm import LLMTurn, ToolCall
 
@@ -75,6 +75,17 @@ class TextOnlyLLM:
 
 
 class TestResearchEngineService(unittest.IsolatedAsyncioTestCase):
+    async def test_profiles_define_distinct_behavior_not_only_larger_budgets(self):
+        standard = research_policy("standard")
+        deep = research_policy("deep")
+        self.assertNotEqual(standard.guidance, deep.guidance)
+        self.assertIn("compact", standard.guidance)
+        self.assertIn("argumentative coverage", deep.guidance)
+        self.assertGreater(
+            deep.budget.min_core_arguments_per_agent,
+            standard.budget.min_core_arguments_per_agent,
+        )
+
     async def test_budget_exhaustion_never_commits_phase_checkpoint(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "state.json"

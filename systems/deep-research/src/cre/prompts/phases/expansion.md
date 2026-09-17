@@ -15,7 +15,7 @@ STAGE 1 — FORM THE CASE BEFORE SEARCH
    - reasoning: carried by definitions, logical consequences, value judgment, analogy, counterexample or shared experience;
    - mixed: reasoning plus one or more load-bearing factual premises;
    - empirical: the result materially depends on a factual or causal claim.
-5. Create one integrated unit that explains the overall case strategy and a small map of only the unresolved proof obligations. For mixed/empirical arguments, name the exact evidence_need. Do not create a task to "research the topic" in general.
+5. After the argument spine exists, you may maintain one integrated unit for strategy and a small map for genuine unresolved proof obligations. These are optional planning memory, not a second deliverable or a condition for unlocking research. For mixed/empirical arguments, name the exact evidence_need on the argument itself. Do not create a task to "research the topic" in general. Incorporate decisive findings into arguments, but leave honest residual limits in the map and conclusion instead of spending turns administratively closing every entry.
 
 Build this over several compact turns. Never emit more than three tool calls in one response. Do not try to submit every argument, unit and map entry at once.
 

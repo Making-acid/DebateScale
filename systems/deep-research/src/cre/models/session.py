@@ -48,6 +48,7 @@ class ResearchSession:
 
     session_id: str
     question: str
+    profile: str = "deep"
     position_a: str = ""
     position_b: str = ""
     status: SessionStatus = SessionStatus.CREATED
@@ -57,6 +58,9 @@ class ResearchSession:
     # Durable per-phase commits. A host may restart the process after one party
     # finishes; Runtime resumes only the missing party instead of repeating work.
     phase_progress: dict[str, list[str]] = field(default_factory=dict)
+    # Durable protocol attempts which must survive an empty search result and a
+    # host restart.  Values are party ids, keyed by the attempted obligation.
+    protocol_attempts: dict[str, list[str]] = field(default_factory=dict)
     budget: ResearchBudget = field(default_factory=ResearchBudget)
     created_at: str = ""
     updated_at: str = ""

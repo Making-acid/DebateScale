@@ -27,6 +27,7 @@ from ..skills import build_system_prompt
 from .actions import apply_action
 from .budget import PassBudget
 from .mutation_log import MutationLog, now_iso
+from .profiles import research_policy
 from .semantic_diff import build_semantic_diff
 from .state_machine import evaluate_candidate_stable
 from .tool_schemas import (
@@ -82,6 +83,61 @@ def _canonical_tool_name(requested: str, offered: set[str]) -> str:
         if re.sub(r"[^a-z0-9]", "", name.lower()) == compact
     ]
     return matches[0] if len(matches) == 1 else requested
+
+
+def _resolve_existing_argument_id(
+    payload: dict,
+    arguments: list,
+) -> str | None:
+    """Resolve a model's human alias to one existing argument, conservatively.
+
+    Continuous passes are revision-only.  Some providers still submit the
+    memorable plan label (``B3-displacement``) or the argument title even when
+    the tool schema enumerates opaque ids.  Treating that as a brand-new
+    argument turns a harmless presentation mismatch into a retry loop.  We only
+    translate when title matching or an explicit A/B ordinal identifies one
+    existing argument unambiguously.
+    """
+
+    active = [item for item in arguments if item.status.value != "withdrawn"]
+    by_id = {item.argument_id: item for item in active}
+    requested = str(payload.get("argument_id") or "").strip()
+    if requested in by_id:
+        return requested
+
+    def compact(value: object) -> str:
+        return re.sub(r"[\W_]+", "", str(value or "").casefold())
+
+    signals = [requested, payload.get("title"), payload.get("claim")]
+    normalized_signals = [compact(value) for value in signals if compact(value)]
+    exact_matches = {
+        item.argument_id
+        for item in active
+        if compact(item.title) in normalized_signals
+        or compact(item.argument_id) in normalized_signals
+    }
+    if len(exact_matches) == 1:
+        return next(iter(exact_matches))
+
+    contained_matches = {
+        item.argument_id
+        for item in active
+        for signal in normalized_signals
+        if min(len(compact(item.title)), len(signal)) >= 8
+        and (
+            compact(item.title) in signal
+            or signal in compact(item.title)
+        )
+    }
+    if len(contained_matches) == 1:
+        return next(iter(contained_matches))
+
+    ordinal = re.match(r"^[ab]\s*[-_]?\s*(\d{1,2})(?:\D|$)", requested.casefold())
+    if ordinal:
+        index = int(ordinal.group(1)) - 1
+        if 0 <= index < len(active):
+            return active[index].argument_id
+    return None
 
 
 class Runtime:
@@ -221,14 +277,18 @@ class Runtime:
             and len(item.warrant) >= 2
         ]
         return (
-            len(framed) >= 3
-            and bool(await self.store.list_units(session_id, agent))
-            and bool(await self.store.list_map_entries(session_id, agent))
+            len(framed) >= max(1, session.budget.min_core_arguments_per_agent)
         )
 
     async def _exact_motion_attempted(self, session_id: str, agent: Party) -> bool:
         """Recognize current and pre-v0.6 exact-motion search records."""
 
+        session = await self.store.load_session(session_id)
+        if (
+            session is not None
+            and agent.value in session.protocol_attempts.get("exact_motion", [])
+        ):
+            return True
         return any(
             source.discovered_by is agent
             and (
@@ -243,6 +303,17 @@ class Runtime:
             )
             for source in await self.store.list_sources(session_id)
         )
+
+    async def _record_protocol_attempt(
+        self, session: ResearchSession, key: str, agent: Party
+    ) -> None:
+        """Persist a required attempt even when an external search returns nothing."""
+
+        completed = session.protocol_attempts.setdefault(key, [])
+        if agent.value not in completed:
+            completed.append(agent.value)
+            session.updated_at = now_iso()
+            await self.store.save_session(session)
 
     @staticmethod
     def _text_terms(value: str) -> set[str]:
@@ -746,6 +817,116 @@ class Runtime:
             return f"tool failed; revise the request or use another source: {str(exc)[:400]}"
         return result.content if result.ok else f"error: {result.error}"
 
+    async def _expansion_completion_error(
+        self, session: ResearchSession, agent: Party
+    ) -> str | None:
+        """Return the single authoritative Pass One construction verdict.
+
+        Exit-window entry, conclusion, checkpoint recovery and tool gating all
+        consume this same audit.  It deliberately excludes the plan/conclusion
+        envelope, which records the model's stopping judgment after construction
+        is mechanically complete.
+        """
+
+        limits = session.budget
+        arguments = await self.store.list_arguments(session.session_id, agent)
+        # Tiny scripted/demo profiles intentionally set the argument floor to
+        # zero. Keep their legacy fixture contract without reintroducing unit/map
+        # gates into either public production profile.
+        if not limits.min_core_arguments_per_agent and not arguments:
+            units = await self.store.list_units(session.session_id, agent)
+            maps = await self.store.list_map_entries(session.session_id, agent)
+            if not any(unit.content.strip() for unit in units) or not maps:
+                return "Fixture Pass One has not committed its synthetic unit and map yet."
+        discovered = [
+            source for source in await self.store.list_sources(session.session_id)
+            if source.discovered_by is agent
+            and self._source_is_qualified(source, agent)
+        ]
+        if len(discovered) < limits.min_sources_per_agent:
+            return (
+                "Pass One breadth floor not met: "
+                f"{len(discovered)}/{limits.min_sources_per_agent} sources discovered "
+                "by this position. Continue only the highest-value open query routes."
+            )
+
+        evidence = await self.store.list_evidence(session.session_id, agent)
+        examined_source_ids = {
+            source.source_id
+            for source in await self.store.list_sources(session.session_id)
+            if agent in source.investigated_by
+        }
+        valid_evidence_ids: set[str] = set()
+        for item in evidence:
+            source = await self.store.load_source(item.source_id)
+            if (
+                item.status.value != "rejected"
+                and source is not None
+                and agent in source.investigated_by
+                and all((item.proposition, item.finding, item.method,
+                         item.limitations, item.provenance))
+            ):
+                valid_evidence_ids.add(item.evidence_id)
+        if len(examined_source_ids) < limits.min_examined_sources_per_agent:
+            return (
+                "Pass One source-investigation floor not met: "
+                f"{len(examined_source_ids)}/{limits.min_examined_sources_per_agent} "
+                "distinct inspected sources."
+            )
+
+        if limits.argument_first_gate and not any(
+            item.status.value != "withdrawn"
+            and len(item.original_contribution.strip()) >= 20
+            for item in arguments
+        ):
+            return (
+                "Pass One has no inspectable original contribution yet. Revise at least "
+                "one argument with a defensible new inferential link, framing, comparison, "
+                "boundary, counterexample or defensive repair."
+            )
+
+        complete = []
+        for item in arguments:
+            if item.status.value == "withdrawn":
+                continue
+            missing = set(item.missing_proof_fields())
+            verified = (
+                not missing
+                and (
+                    item.support_type == "reasoning"
+                    or bool(valid_evidence_ids.intersection(item.evidence_ids))
+                )
+            )
+            honestly_unverified = (
+                missing == {"evidence_ids"}
+                and bool(item.evidence_need)
+                and all(str(need).strip() for need in item.evidence_need)
+            )
+            if verified or honestly_unverified:
+                complete.append(item)
+        if len(complete) < limits.min_core_arguments_per_agent:
+            details = "; ".join(
+                f"{item.argument_id}: {', '.join(item.missing_proof_fields())}"
+                for item in arguments
+                if item.status.value != "withdrawn" and item.missing_proof_fields()
+            ) or "mixed/empirical arguments lack evidence for their named factual needs"
+            return (
+                "Pass One case floor not met: "
+                f"{len(complete)}/{limits.min_core_arguments_per_agent} complete "
+                f"position arguments. Missing proof links: {details}"
+            )
+        if (
+            session.budget.argument_first_gate
+            and not await self._exact_motion_attempted(session.session_id, agent)
+        ):
+            return (
+                "Pass One exact-motion archaeology has not been attempted. Run one "
+                "bounded argument_discovery search with discovery_kind=exact_motion for "
+                "prior rounds, speeches, reviews or public debate on this proposition. "
+                "A failed or empty search still counts as an honest attempt."
+            )
+        return None
+
     async def _conclusion_error(
         self, mode: str, agent: Party, pass_no: int, args: dict,
         budget: PassBudget | None = None,
@@ -770,185 +951,12 @@ class Runtime:
             )
 
         if mode == "expansion":
-            # A resumed Pass retains the durable deliverables committed before
-            # process interruption. Requiring fresh mutations for those same
-            # deliverables forces the model to redraw the case and can reopen a
-            # finished retrieval branch. Audit actual state instead.
-            units = await self.store.list_units(self.log.session_id, agent)
-            maps = await self.store.list_map_entries(self.log.session_id, agent)
-            absent = set()
-            if not any(unit.content.strip() for unit in units):
-                absent.add(EngineAction.UPDATE_UNIT)
-            if not maps:
-                absent.add(EngineAction.UPDATE_MAP)
-            if absent:
-                names = ", ".join(sorted(a.value for a in absent))
-                return (
-                    "Pass One cannot conclude before committing both an integrated "
-                    f"research unit and an actionable research map; missing: {names}"
-                )
-            gate_session = await self.store.load_session(self.log.session_id)
-            prior_exact_motion = (
-                await self._exact_motion_attempted(gate_session.session_id, agent)
-                if gate_session is not None else False
-            )
-            if (
-                budget is not None
-                and gate_session is not None
-                and gate_session.budget.argument_first_gate
-                and budget.usage.exact_motion_searches < 1
-                and not prior_exact_motion
-            ):
-                return (
-                    "Pass One exact-motion archaeology has not been attempted. Run one "
-                    "bounded argument_discovery search with discovery_kind=exact_motion for "
-                    "prior rounds, speeches, reviews or public debate on this proposition. "
-                    "Keep only ideas that improve the case's logic. A failed or empty search "
-                    "still counts as an honest attempt; do not search endlessly."
-                )
-            session = gate_session
-            if session is not None:
-                limits = session.budget
-                unresolved_map = [
-                    entry for entry in await self.store.list_map_entries(
-                        session.session_id, agent
-                    )
-                    if entry.status.value != "resolved"
-                    and not (entry.externally_blocked and entry.blocker_reason.strip())
-                ]
-                if unresolved_map:
-                    labels = "; ".join(
-                        f"{entry.map_id}: {entry.title}" for entry in unresolved_map[:6]
-                    )
-                    return (
-                        "Pass One cannot export unfinished proof obligations to the human. "
-                        "Resolve them by repairing the current arguments/unit and mark each "
-                        "map entry resolved. Only a genuinely unavailable real-world fact "
-                        "may remain externally_blocked with a concrete blocker reason. "
-                        f"Still open: {labels}"
-                    )
-                # A map entry is a proof obligation, not a checkbox. If it was
-                # ever opened, a later argument/unit revision must embody the
-                # answer before the resolved label is accepted.
-                pass_mutations = [
-                    mutation for mutation in await self.log.list(pass_no)
-                    if mutation.agent is agent
-                ]
-                unincorporated: list[str] = []
-                for entry in await self.store.list_map_entries(
-                    session.session_id, agent
-                ):
-                    opened = [
-                        mutation.seq for mutation in pass_mutations
-                        if mutation.action is EngineAction.UPDATE_MAP
-                        and mutation.target.id == entry.map_id
-                        and mutation.payload.get("status") == "active"
-                    ]
-                    if not opened or entry.status.value != "resolved":
-                        continue
-                    last_opened = max(opened)
-                    embodied = any(
-                        mutation.seq > last_opened
-                        and mutation.action in {
-                            EngineAction.UPDATE_ARGUMENT, EngineAction.UPDATE_UNIT
-                        }
-                        for mutation in pass_mutations
-                    )
-                    if not embodied:
-                        unincorporated.append(f"{entry.map_id}: {entry.title}")
-                if unincorporated:
-                    return (
-                        "A proof obligation was marked resolved without revising the "
-                        "deliverable. Put the answer into update_argument or update_unit; "
-                        "changing only the map does not improve the human's case. "
-                        "Unincorporated: " + "; ".join(unincorporated[:6])
-                    )
-                discovered = [
-                    source
-                    for source in await self.store.list_sources(session.session_id)
-                    if source.discovered_by is agent
-                    and self._source_is_qualified(source, agent)
-                ]
-                if len(discovered) < limits.min_sources_per_agent:
-                    return (
-                        "Pass One breadth floor not met: "
-                        f"{len(discovered)}/{limits.min_sources_per_agent} sources discovered "
-                        "by this position. Continue the query portfolio across disciplines, "
-                        "argument families, counterevidence, and primary materials."
-                    )
-                evidence = await self.store.list_evidence(session.session_id, agent)
-                examined_source_ids = {
-                    source.source_id
-                    for source in await self.store.list_sources(session.session_id)
-                    if agent in source.investigated_by
-                }
-                valid_evidence_ids: set[str] = set()
-                for item in evidence:
-                    source = await self.store.load_source(item.source_id)
-                    if (
-                        item.status.value != "rejected"
-                        and source is not None
-                        and agent in source.investigated_by
-                    ):
-                        if all((item.proposition, item.finding, item.method,
-                                item.limitations, item.provenance)):
-                            valid_evidence_ids.add(item.evidence_id)
-                if len(examined_source_ids) < limits.min_examined_sources_per_agent:
-                    return (
-                        "Pass One source-investigation floor not met: "
-                        f"{len(examined_source_ids)}/{limits.min_examined_sources_per_agent} "
-                        "distinct inspected sources. Search snippets and duplicate records "
-                        "do not count; inspect sources and call "
-                        "record_evidence with method, limitations, and provenance."
-                    )
-                arguments = await self.store.list_arguments(session.session_id, agent)
-                if (
-                    limits.argument_first_gate
-                    and not any(
-                        item.status.value != "withdrawn"
-                        and len(item.original_contribution.strip()) >= 20
-                        for item in arguments
-                    )
-                ):
-                    return (
-                        "Pass One has a coherent stock case but no inspectable original "
-                        "contribution yet. Revise at least one argument with "
-                        "original_contribution: name a defensible new inferential link, "
-                        "framing, comparison, boundary, counterexample, or defensive repair "
-                        "and explain why it improves the case. Unusual wording alone does "
-                        "not count."
-                    )
-                complete = []
-                for item in arguments:
-                    if item.status.value == "withdrawn":
-                        continue
-                    missing = set(item.missing_proof_fields())
-                    verified = (
-                        not missing
-                        and (
-                            item.support_type == "reasoning"
-                            or bool(valid_evidence_ids.intersection(item.evidence_ids))
-                        )
-                    )
-                    honestly_unverified = (
-                        item.status.value == "defensible"
-                        and missing == {"evidence_ids"}
-                        and bool(item.evidence_need)
-                        and all(str(need).strip() for need in item.evidence_need)
-                    )
-                    if verified or honestly_unverified:
-                        complete.append(item)
-                if len(complete) < limits.min_core_arguments_per_agent:
-                    details = "; ".join(
-                        f"{item.argument_id}: {', '.join(item.missing_proof_fields())}"
-                        for item in arguments
-                        if item.status.value != "withdrawn" and item.missing_proof_fields()
-                    ) or "mixed/empirical arguments lack evidence for their named factual needs"
-                    return (
-                        "Pass One case floor not met: "
-                        f"{len(complete)}/{limits.min_core_arguments_per_agent} complete "
-                        f"position arguments. Missing proof links: {details}"
-                    )
+            session = await self.store.load_session(self.log.session_id)
+            if session is None:
+                return "Research session is unavailable; cannot audit Pass One."
+            error = await self._expansion_completion_error(session, agent)
+            if error:
+                return error
         if mode == "collision":
             session = await self.store.load_session(self.log.session_id)
             if session is not None:
@@ -990,8 +998,8 @@ class Runtime:
                 arguments = await self.store.list_arguments(session.session_id, agent)
                 unfinished = [
                     item for item in arguments
-                    if item.status.value not in {"defensible", "withdrawn"}
-                    or (
+                    if item.status.value != "withdrawn"
+                    and (
                         bool(item.missing_proof_fields())
                         and not (
                             set(item.missing_proof_fields()) == {"evidence_ids"}
@@ -1060,12 +1068,7 @@ class Runtime:
                     "Your bounded initial case frame is complete and research tools are now "
                     "available. Search for argument value first; verify only named factual needs."
                 )
-                structurally_ready = await self._expansion_state_complete(session, agent)
-                prior_exact_motion = (
-                    not session.budget.argument_first_gate
-                    or await self._exact_motion_attempted(session.session_id, agent)
-                )
-                convergence_ready = structurally_ready and prior_exact_motion
+                convergence_ready = await self._expansion_state_complete(session, agent)
                 if convergence_ready:
                     parts.append(
                         "CONVERGENCE SIGNAL: the durable case currently satisfies the structural "
@@ -1077,9 +1080,10 @@ class Runtime:
             else:
                 parts.append(
                     "INITIAL CASE GATE: external research is intentionally unavailable. Build "
-                    "at least three distinct, explicit arguments, one integrated strategy unit, "
-                    "and a small proof-obligation map from your own reasoning. Do not ask for "
-                    "sources yet and do not create empty placeholders."
+                    f"at least {max(1, session.budget.min_core_arguments_per_agent)} distinct, "
+                    "explicit arguments from your own reasoning. Do not ask for sources yet "
+                    "and do not create empty placeholders. Units and maps are optional planning "
+                    "memory, not substitutes for arguments."
                 )
         units = await self.store.list_units(session.session_id, agent)
         if units:
@@ -1378,6 +1382,7 @@ class Runtime:
         system_content = self.prompt_builder(
             mode, agent, session.question, session.position_for(agent)
         )
+        system_content += "\n\n" + research_policy(session.profile).guidance
         messages = [
             {"role": "system", "content": system_content},
             {"role": "user", "content": await self._build_context(session, agent, mode)},
@@ -1546,10 +1551,6 @@ class Runtime:
             convergence_ready = (
                 mode == "expansion"
                 and await self._expansion_state_complete(session, agent)
-                and (
-                    not session.budget.argument_first_gate
-                    or await self._exact_motion_attempted(session.session_id, agent)
-                )
             )
             if convergence_ready and not convergence_announced:
                 convergence_announced = True
@@ -1694,6 +1695,15 @@ class Runtime:
                     "update_plan", "update_rebuttal", "update_argument",
                     "conclude_pass",
                 }
+            elif mode == "expansion":
+                # Pass One is private position construction. It cannot see the
+                # opponent and therefore cannot create valid rebuttals or
+                # cross-party work orders. Keeping those generic actions open
+                # caused fabricated target ids and wasted turns.
+                allowed_engine_actions = {
+                    "update_plan", "update_unit", "update_map",
+                    "record_evidence", "update_argument", "conclude_pass",
+                }
             else:
                 allowed_engine_actions = set(ENGINE_ACTION_NAMES)
             if mode == "continuous" and continuous_repair_actions >= 2:
@@ -1726,6 +1736,37 @@ class Runtime:
                 tool for tool in ENGINE_ACTION_TOOLS
                 if tool.get("function", {}).get("name") in allowed_engine_actions
             ]
+            if mode == "continuous":
+                # This phase repairs the existing case; it never invents a new
+                # argument family. Constrain the identifier at the provider
+                # contract so human-readable aliases from the model's plan
+                # cannot be mistaken for new argument ids.
+                own_arguments = await self.store.list_arguments(
+                    session.session_id, agent
+                )
+                own_argument_ids = [
+                    item.argument_id for item in own_arguments
+                    if item.status.value != "withdrawn"
+                ]
+                if own_argument_ids:
+                    available_engine_tools = copy.deepcopy(available_engine_tools)
+                    title_index = "; ".join(
+                        f"{item.argument_id} = {item.title}"
+                        for item in own_arguments
+                        if item.status.value != "withdrawn"
+                    )
+                    for tool in available_engine_tools:
+                        function = tool.get("function", {})
+                        if function.get("name") == "update_argument":
+                            properties = function.get("parameters", {}).get("properties", {})
+                            properties["argument_id"] = {
+                                "type": "string",
+                                "enum": own_argument_ids,
+                                "description": (
+                                    "Choose the exact existing argument id to repair. "
+                                    "Do not use a title or plan alias. " + title_index
+                                ),
+                            }
             if mode == "collision" and collision_uncovered:
                 # Make target ownership explicit in the contract. On resumed
                 # collision passes, the context also contains the opponent's
@@ -1746,6 +1787,7 @@ class Runtime:
                     or collision_coverage_complete
                     or (mode == "continuous" and continuous_repair_actions >= 2)
                 )
+                and current_plan is not None
                 and current_plan.status != "ready_to_conclude"
             ):
                 # Make the state transition unambiguous at the tool-contract
@@ -2043,6 +2085,16 @@ class Runtime:
                                 budget=budget,
                             )
                             continue
+                    if mode == "continuous" and tc.name == "update_argument":
+                        own_arguments = await self.store.list_arguments(
+                            session.session_id, agent
+                        )
+                        resolved_id = _resolve_existing_argument_id(
+                            tc.arguments, own_arguments
+                        )
+                        if resolved_id:
+                            tc.arguments = dict(tc.arguments)
+                            tc.arguments["argument_id"] = resolved_id
                     try:
                         mutation = await apply_action(
                             self.store, self.log, EngineAction(tc.name),
@@ -2306,6 +2358,17 @@ class Runtime:
                                 mode=str(tc.arguments.get("search_mode", "argument_discovery")),
                                 discovery_kind=str(tc.arguments.get("discovery_kind", "")),
                             )
+                        if (
+                            tc.name == "search"
+                            and not gated_search
+                            and str(tc.arguments.get("discovery_kind", "")) == "exact_motion"
+                        ):
+                            # The protocol requires one honest attempt, not a
+                            # successful result. Persist it independently from
+                            # the source pool so an empty result can still resume.
+                            await self._record_protocol_attempt(
+                                session, "exact_motion", agent
+                            )
                         if tc.name in {"read_source", "transcribe_source"} and not failed and not cached_read:
                             turn_productive = True
                         if tc.name == "search" and not failed:
@@ -2552,76 +2615,41 @@ class Runtime:
     async def _expansion_state_complete(
         self, session: ResearchSession, agent: Party
     ) -> bool:
-        """Revalidate a durable checkpoint instead of trusting its marker alone."""
+        """Revalidate a checkpoint through the same audit used at conclusion."""
 
-        if not await self.store.list_units(session.session_id, agent):
-            return False
-        map_entries = await self.store.list_map_entries(session.session_id, agent)
-        if not map_entries:
-            return False
-        # The map is shared across phases. Continuous repair may create or
-        # reopen an obligation after Pass One has already concluded; that new
-        # work must not retroactively invalidate the expansion checkpoint.
-        discovered = {
-            source.source_id
-            for source in await self.store.list_sources(session.session_id)
-            if source.discovered_by is agent
-            and self._source_is_qualified(source, agent)
-        }
-        if len(discovered) < session.budget.min_sources_per_agent:
-            return False
-        valid_evidence: set[str] = set()
-        inspected_sources = {
-            source.source_id
-            for source in await self.store.list_sources(session.session_id)
-            if agent in source.investigated_by
-        }
-        for item in await self.store.list_evidence(session.session_id, agent):
-            source = await self.store.load_source(item.source_id)
-            if (
-                item.status.value != "rejected"
-                and source is not None
-                and agent in source.investigated_by
-            ):
-                if all((item.proposition, item.finding, item.method,
-                        item.limitations, item.provenance)):
-                    valid_evidence.add(item.evidence_id)
-        if len(inspected_sources) < session.budget.min_examined_sources_per_agent:
-            return False
-        complete_arguments = []
-        for item in await self.store.list_arguments(session.session_id, agent):
-            if item.status.value == "withdrawn":
-                continue
-            missing = set(item.missing_proof_fields())
-            verified = (
-                not missing
-                and (
-                    item.support_type == "reasoning"
-                    or bool(valid_evidence.intersection(item.evidence_ids))
+        return await self._expansion_completion_error(session, agent) is None
+
+    async def _expansion_checkpoint_intact(
+        self, session: ResearchSession, agent: Party
+    ) -> bool:
+        """Check that a completed Pass One still has its durable deliverables.
+
+        Later collision/repair work may legitimately reopen a shared map item or
+        alter an argument.  That must not send a resumed session back in time to
+        Pass One; the original conclusion mutation is the completion decision.
+        Recovery therefore checks integrity, not today's open-work frontier.
+        """
+
+        if not session.budget.min_core_arguments_per_agent:
+            return bool(
+                any(
+                    unit.content.strip()
+                    for unit in await self.store.list_units(session.session_id, agent)
+                )
+                and await self.store.list_map_entries(session.session_id, agent)
+            )
+        viable = [
+            item for item in await self.store.list_arguments(session.session_id, agent)
+            if item.status.value != "withdrawn"
+            and (
+                not item.missing_proof_fields()
+                or (
+                    set(item.missing_proof_fields()) == {"evidence_ids"}
+                    and bool(item.evidence_need)
                 )
             )
-            # Debate cases often contain a sound reasoning chain plus an
-            # empirical magnitude premise that the available web cannot verify.
-            # After the model has named that exact evidence need, retaining it as
-            # an explicit limitation is more honest than either relabelling the
-            # argument "reasoning" or searching forever. Collision and the final
-            # report will keep the evidential weakness visible.
-            honestly_unverified = (
-                item.status.value == "defensible"
-                and missing == {"evidence_ids"}
-                and bool(item.evidence_need)
-                and all(str(need).strip() for need in item.evidence_need)
-            )
-            if verified or honestly_unverified:
-                complete_arguments.append(item)
-        if len(complete_arguments) < session.budget.min_core_arguments_per_agent:
-            return False
-        if session.budget.argument_first_gate and not any(
-            len(item.original_contribution.strip()) >= 20
-            for item in complete_arguments
-        ):
-            return False
-        return True
+        ]
+        return len(viable) >= session.budget.min_core_arguments_per_agent
 
     async def _repair_phase_progress(self, session: ResearchSession) -> None:
         """Remove markers written by older runtimes that accepted budget exhaustion."""
@@ -2677,7 +2705,7 @@ class Runtime:
             except ValueError:
                 changed = True
                 continue
-            if await self._expansion_state_complete(session, agent):
+            if await self._expansion_checkpoint_intact(session, agent):
                 valid_expansion.append(value)
             else:
                 changed = True
@@ -2886,13 +2914,13 @@ class Runtime:
                     session.budget.max_cycles is not None
                     and session.current_cycle >= session.budget.max_cycles
                 )
-                if maxed_out:
+                if await evaluate_candidate_stable(self.store, session, mutations):
+                    session.status = SessionStatus.CANDIDATE_STABLE
+                elif maxed_out:
                     # A safety ceiling means "incomplete, needs review", never
                     # "research is stable". Quality gates must not be bypassed by
                     # exhausting compute.
                     session.status = SessionStatus.HUMAN_REVIEW
-                elif await evaluate_candidate_stable(self.store, session, mutations):
-                    session.status = SessionStatus.CANDIDATE_STABLE
             elif status == SessionStatus.CANDIDATE_STABLE:
                 self._progress("stability", "正在进行最终稳定性审计")
                 if await self._do_stability_check(session):

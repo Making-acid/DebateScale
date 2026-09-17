@@ -2,8 +2,9 @@
 
 The runtime checks signals and switches states; it does not judge research value.
 ``evaluate_candidate_stable`` encodes only the mechanical condition from the
-design doc: both agents concluded with no high-value direction, and there is no
-high-priority open issue or high-importance active map branch.
+design doc: both agents concluded with no high-value direction and there is no
+high-priority open issue. Research maps are planning memory; they are not a
+second completion authority over the current arguments and rebuttals.
 """
 
 from __future__ import annotations
@@ -39,25 +40,18 @@ async def evaluate_candidate_stable(
         return False
 
     for agent in agents:
-        entries = await store.list_map_entries(session.session_id, agent)
-        # Needing more searchable evidence is not a stopping reason. A high-value
-        # proof obligation remains blocking even when an agent labels it dormant;
-        # only a concrete external blocker can move it out of the engine.
-        if any(
-            e.status.value != "resolved"
-            and e.importance == "high"
-            and not e.externally_blocked
-            for e in entries
-        ):
-            return False
-
         if session.budget.min_core_arguments_per_agent:
             arguments = await store.list_arguments(session.session_id, agent)
             viable = [item for item in arguments if item.status.value != "withdrawn"]
             if len(viable) < session.budget.min_core_arguments_per_agent:
                 return False
             if any(
-                item.status.value != "defensible" or item.missing_proof_fields()
+                item.missing_proof_fields()
+                and not (
+                    set(item.missing_proof_fields()) == {"evidence_ids"}
+                    and bool(item.evidence_need)
+                    and all(str(need).strip() for need in item.evidence_need)
+                )
                 for item in viable
             ):
                 return False

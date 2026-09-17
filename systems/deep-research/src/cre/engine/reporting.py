@@ -276,6 +276,37 @@ def _valid_report(value: Any) -> bool:
     )) and all(key in value.get("sides", {}) for key in ("affirmative", "negative"))
 
 
+def _remove_internal_labels(text: str, data: dict[str, Any]) -> str:
+    """Translate engine-only identifiers that a final editor may copy verbatim."""
+
+    replacements: dict[str, str] = {}
+    for side in ("A", "B"):
+        for item in data.get("arguments", {}).get(side) or []:
+            internal_id = str(item.get("argument_id") or "").strip()
+            title = _clean(item.get("title"))
+            if internal_id:
+                replacements[internal_id] = f"“{title}”" if title else "相关论点"
+        for item in data.get("rebuttals", {}).get(side) or []:
+            internal_id = str(item.get("rebuttal_id") or "").strip()
+            if internal_id:
+                replacements[internal_id] = "相关驳论"
+        for item in data.get("maps", {}).get(side) or []:
+            internal_id = str(item.get("map_id") or "").strip()
+            if internal_id:
+                replacements[internal_id] = "相关研究限制"
+        for item in data.get("units", {}).get(side) or []:
+            internal_id = str(item.get("unit_id") or "").strip()
+            if internal_id:
+                replacements[internal_id] = "本方整体立论"
+    for internal_id in sorted(replacements, key=len, reverse=True):
+        text = text.replace(internal_id, replacements[internal_id])
+    return re.sub(
+        r"(?i)\b(?:arg|map|reb|ru|mut)_[a-z0-9_-]+\b",
+        "相关论证",
+        text,
+    )
+
+
 async def compile_reader_report(data: dict[str, Any], llm: LLMPort) -> tuple[dict[str, Any], dict[str, Any]]:
     """Ask a neutral final editor to rewrite the current state, with a safe fallback."""
 
@@ -291,6 +322,7 @@ async def compile_reader_report(data: dict[str, Any], llm: LLMPort) -> tuple[dic
         if not _valid_report(report):
             raise ValueError("final editor did not return the complete report contract")
         if report.get("markdown"):
+            report["markdown"] = _remove_internal_labels(report["markdown"], data)
             source_lines = ["", "## 来源目录", ""]
             if not sources:
                 source_lines.append("这份报告的核心内容由逻辑推演形成，没有外部来源进入最终论证。")

@@ -21,7 +21,7 @@ class EditorLLM:
             "## 正方\n\n## 反方\n\n## 真正决定比赛的交锋\n\n"
             "## 怎样把研究转成赛场表达\n\n## 使用前仍需注意\n\n"
         )
-        markdown = headings + ("这是经过编辑、可供读者直接阅读的完整论证。" * 220)
+        markdown = headings + "核心内容见 arg_a_0001。" + ("这是经过编辑、可供读者直接阅读的完整论证。" * 220)
         return LLMTurn(text=markdown, usage=LLMUsage(100, 50))
 
 
@@ -45,6 +45,7 @@ class TestReporting(unittest.IsolatedAsyncioTestCase):
     async def test_model_editor_creates_reader_contract_and_sources(self):
         report, meta = await compile_reader_report(self.data, EditorLLM())
         self.assertEqual(meta["mode"], "model_edited")
+        self.assertNotRegex(report["markdown"], r"(?i)\b(?:arg|map|reb|ru|mut)_[a-z0-9_-]+\b")
         self.assertEqual(report["title"], self.data["session"]["question"])
         self.assertTrue(report["markdown"].startswith("# 测试辩题"))
         self.assertIn("sources", report)

@@ -14,6 +14,7 @@ from .runtime import Runtime
 from .projection import project_research
 from .reporting import build_editorial_packet, compile_reader_report
 from .service import ResearchEngine, ResearchRequest, research_budget
+from .profiles import ResearchProfilePolicy, research_policy
 from .semantic_diff import build_semantic_diff
 from .state_machine import evaluate_candidate_stable
 
@@ -33,6 +34,8 @@ __all__ = [
     "map_to_markdown",
     "now_iso",
     "research_budget",
+    "research_policy",
+    "ResearchProfilePolicy",
     "project_research",
     "build_editorial_packet",
     "compile_reader_report",

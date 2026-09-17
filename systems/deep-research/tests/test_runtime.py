@@ -7,7 +7,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from cre.adapters import InMemoryStore
 from cre.engine import MutationLog, Runtime, apply_action
 from cre.engine.budget import PassBudget
-from cre.engine.runtime import PassBudgetExhausted, _canonical_tool_name
+from cre.engine.runtime import (
+    PassBudgetExhausted,
+    _canonical_tool_name,
+    _resolve_existing_argument_id,
+)
 from cre.engine.state_machine import evaluate_candidate_stable
 from cre.engine.tool_schemas import read_source_tool_schema, search_tool_schema
 from cre.models import (
@@ -168,6 +172,26 @@ class TestRuntime(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             _canonical_tool_name("deleteEverything", offered), "deleteEverything"
+        )
+
+    def test_continuous_argument_alias_resolves_only_to_existing_argument(self):
+        arguments = [
+            Argument(argument_id="arg_b_0001", title="基准线反打"),
+            Argument(argument_id="arg_b_0002", title="边际受众"),
+            Argument(argument_id="arg_b_0003", title="位移账本：净效应由挤掉什么决定"),
+        ]
+        self.assertEqual(
+            _resolve_existing_argument_id(
+                {"argument_id": "B3-displacement", "title": "位移账本：净效应由挤掉什么决定（修订版）"},
+                arguments,
+            ),
+            "arg_b_0003",
+        )
+        self.assertIsNone(
+            _resolve_existing_argument_id(
+                {"argument_id": "new-idea", "title": "完全无关的新论点"},
+                arguments,
+            )
         )
 
     async def _plan(self, store, session, agent, phase, status="active"):
@@ -1012,9 +1036,17 @@ class TestRuntime(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.phase_progress["continuous:0"], ["A"])
         self.assertEqual(session.status, SessionStatus.CONTINUOUS)
 
-    async def test_pass_one_conclusion_requires_integrated_unit_and_map(self):
+    async def test_pass_one_conclusion_requires_complete_arguments_not_auxiliary_notes(self):
         store = InMemoryStore()
-        session = ResearchSession(session_id="gate", question="P?", position_a="P")
+        session = ResearchSession(
+            session_id="gate", question="P?", position_a="P",
+            budget=ResearchBudget(
+                min_sources_per_agent=0,
+                min_examined_sources_per_agent=0,
+                min_core_arguments_per_agent=1,
+                argument_first_gate=False,
+            ),
+        )
         await store.save_session(session)
         await self._plan(store, session, Party.A, "expansion", "ready_to_conclude")
         runtime = Runtime(store=store, llm=MockLLM())
@@ -1022,8 +1054,7 @@ class TestRuntime(unittest.IsolatedAsyncioTestCase):
         error = await runtime._conclusion_error(
             "expansion", Party.A, 1, MockLLM._conclusion("too early", False)
         )
-        self.assertIn("update_unit", error)
-        self.assertIn("update_map", error)
+        self.assertIn("case floor not met", error)
 
     async def test_resumed_pass_accepts_durable_prior_unit_and_map(self):
         store = InMemoryStore()
@@ -1064,7 +1095,7 @@ class TestRuntime(unittest.IsolatedAsyncioTestCase):
         self.assertIn("attempted", error)
         self.assertIn("remaining_unknowns", error)
 
-    async def test_pass_one_map_resolution_must_revise_deliverable(self):
+    async def test_pass_one_map_is_planning_memory_not_duplicate_gate(self):
         store = InMemoryStore()
         session = ResearchSession(
             session_id="map_gate",
@@ -1075,6 +1106,7 @@ class TestRuntime(unittest.IsolatedAsyncioTestCase):
                 min_sources_per_agent=0,
                 min_examined_sources_per_agent=0,
                 min_core_arguments_per_agent=0,
+                argument_first_gate=False,
             ),
         )
         await store.save_session(session)
@@ -1096,7 +1128,43 @@ class TestRuntime(unittest.IsolatedAsyncioTestCase):
         error = await runtime._conclusion_error(
             "expansion", Party.A, 1, MockLLM._conclusion("done", False)
         )
-        self.assertIn("without revising the deliverable", error)
+        self.assertIsNone(error)
+
+    async def test_pass_one_exit_signal_and_conclusion_share_one_map_audit(self):
+        store = InMemoryStore()
+        session = ResearchSession(
+            session_id="single-expansion-audit",
+            question="P?",
+            position_a="P",
+            budget=ResearchBudget(
+                min_sources_per_agent=0,
+                min_examined_sources_per_agent=0,
+                min_core_arguments_per_agent=0,
+                argument_first_gate=False,
+            ),
+        )
+        await store.save_session(session)
+        await store.save_unit(
+            ResearchUnit("ru_a_0001", content="case"), session.session_id, Party.A
+        )
+        entry = ResearchMapEntry("map_a_0001", title="open proof", status=MapStatus.ACTIVE)
+        await store.save_map_entry(entry, session.session_id, Party.A)
+        await self._plan(store, session, Party.A, "expansion", "ready_to_conclude")
+        runtime = Runtime(store=store, llm=MockLLM())
+        runtime.log = MutationLog(store, session.session_id)
+
+        self.assertTrue(await runtime._expansion_state_complete(session, Party.A))
+        error = await runtime._conclusion_error(
+            "expansion", Party.A, 1, MockLLM._conclusion("done", False)
+        )
+        self.assertIsNone(error)
+
+        entry.status = MapStatus.RESOLVED
+        await store.save_map_entry(entry, session.session_id, Party.A)
+        self.assertTrue(await runtime._expansion_state_complete(session, Party.A))
+        self.assertIsNone(await runtime._conclusion_error(
+            "expansion", Party.A, 1, MockLLM._conclusion("done", False)
+        ))
 
     async def test_current_revision_cannot_stabilize_under_active_rebuttal(self):
         store = InMemoryStore()
